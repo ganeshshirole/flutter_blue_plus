@@ -5,6 +5,7 @@
 package com.lib.flutter_blue_plus;
 
 import android.Manifest;
+import android.annotation.SuppressLint;
 import android.annotation.TargetApi;
 import android.app.Activity;
 import android.app.Application;
@@ -15,14 +16,14 @@ import android.bluetooth.BluetoothGattCallback;
 import android.bluetooth.BluetoothGattCharacteristic;
 import android.bluetooth.BluetoothGattDescriptor;
 import android.bluetooth.BluetoothGattService;
-import android.bluetooth.BluetoothStatusCodes;
 import android.bluetooth.BluetoothManager;
 import android.bluetooth.BluetoothProfile;
+import android.bluetooth.BluetoothStatusCodes;
 import android.bluetooth.le.BluetoothLeScanner;
 import android.bluetooth.le.ScanCallback;
 import android.bluetooth.le.ScanFilter;
-import android.bluetooth.le.ScanResult;
 import android.bluetooth.le.ScanRecord;
+import android.bluetooth.le.ScanResult;
 import android.bluetooth.le.ScanSettings;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -36,53 +37,46 @@ import android.os.ParcelUuid;
 import android.util.Log;
 import android.util.SparseArray;
 
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
+
+import java.io.PrintWriter;
+import java.io.StringWriter;
+import java.lang.reflect.Method;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
 import java.util.Timer;
 import java.util.TimerTask;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.io.StringWriter;
-import java.io.PrintWriter;
-import java.io.UnsupportedEncodingException;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.nio.charset.StandardCharsets;
-
-import java.lang.reflect.Method;
-
-import androidx.annotation.NonNull;
-import androidx.annotation.RequiresApi;
-import androidx.core.app.ActivityCompat;
-import androidx.core.content.ContextCompat;
 
 import io.flutter.embedding.engine.plugins.FlutterPlugin;
 import io.flutter.embedding.engine.plugins.activity.ActivityAware;
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding;
-import io.flutter.plugin.common.BinaryMessenger;
-import io.flutter.plugin.common.EventChannel;
-import io.flutter.plugin.common.EventChannel.EventSink;
-import io.flutter.plugin.common.EventChannel.StreamHandler;
 import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.MethodChannel;
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler;
 import io.flutter.plugin.common.MethodChannel.Result;
-import io.flutter.plugin.common.PluginRegistry.RequestPermissionsResultListener;
 import io.flutter.plugin.common.PluginRegistry.ActivityResultListener;
+import io.flutter.plugin.common.PluginRegistry.RequestPermissionsResultListener;
+import kotlin.Unit;
+import kotlin.jvm.functions.Function1;
 
 public class FlutterBluePlusPlugin implements
-    FlutterPlugin,
-    MethodCallHandler,
-    RequestPermissionsResultListener,
-    ActivityResultListener,
-    ActivityAware
-{
+        FlutterPlugin,
+        MethodCallHandler,
+        RequestPermissionsResultListener,
+        ActivityResultListener,
+        ActivityAware, NearestDeviceChangedListener {
     private static final String TAG = "[FBP-Android]";
+    private static final long NEAREST_REFRESH_TIMEOUT = 500;
 
     private LogLevel logLevel = LogLevel.DEBUG;
 
@@ -109,7 +103,7 @@ public class FlutterBluePlusPlugin implements
     private final Map<String, String> mAdvSeen = new ConcurrentHashMap<>();
     private final Map<String, Integer> mScanCounts = new ConcurrentHashMap<>();
     private HashMap<String, Object> mScanFilters = new HashMap<String, Object>();
-    
+
     private final Map<Integer, OperationOnPermission> operationsOnPermission = new HashMap<>();
     private int lastEventId = 1452;
 
@@ -118,6 +112,8 @@ public class FlutterBluePlusPlugin implements
     private interface OperationOnPermission {
         void op(boolean granted, String permission);
     }
+
+    INearestDeviceResolver nearestDeviceResolver = new NearestDeviceResolver(this);
 
     public FlutterBluePlusPlugin() {}
 
@@ -189,6 +185,7 @@ public class FlutterBluePlusPlugin implements
         this.context.registerReceiver(mBluetoothBondStateReceiver, filterBond);
     }
 
+    @SuppressLint("MissingPermission")
     @Override
     public void onDetachedFromEngine(@NonNull FlutterPluginBinding binding)
     {
@@ -264,6 +261,7 @@ public class FlutterBluePlusPlugin implements
     // ██       ██   ██  ██       ██
     //  ██████  ██   ██  ███████  ███████
 
+    @SuppressLint("MissingPermission")
     @Override
     @SuppressWarnings({"deprecation", "unchecked"}) // needed for compatibility, type safety uses bluetooth_msgs.dart
     public void onMethodCall(@NonNull MethodCall call,
@@ -2038,11 +2036,23 @@ public class FlutterBluePlusPlugin implements
                         }
                     }
 
-                    // see BmScanResponse
-                    HashMap<String, Object> response = new HashMap<>();
-                    response.put("advertisements", Arrays.asList(bmScanAdvertisement(device, result)));
+                    if (((boolean) mScanFilters.get("nearest_device")) != false) {
 
-                    invokeMethodUIThread("OnScanResponse", response);
+                        BLESample sample = new BLESample(
+                                device.getAddress(), device.getName(),
+                                LocalDateTime.now(), result.getTxPower(),
+                                result.getRssi(),
+                                device, result
+                        );
+
+                        nearestDeviceResolver.addSample(sample);
+                    } else {
+                        // see BmScanResponse
+                        HashMap<String, Object> response = new HashMap<>();
+                        response.put("advertisements", Arrays.asList(bmScanAdvertisement(device, result)));
+
+                        invokeMethodUIThread("OnScanResponse", response);
+                    }
                 }
 
                 @Override
@@ -2095,7 +2105,7 @@ public class FlutterBluePlusPlugin implements
 
             // android never uses this callback with enums values of CONNECTING or DISCONNECTING,
             // (theyre only used for gatt.getConnectionState()), but just to be
-            // future proof, explicitly ignore anything else. iOS & macOS is the same way.
+            // future proof, explicitly ignore anything else. CoreBluetooth is the same way.
             if(newState != BluetoothProfile.STATE_CONNECTED &&
                newState != BluetoothProfile.STATE_DISCONNECTED) {
                 return;
