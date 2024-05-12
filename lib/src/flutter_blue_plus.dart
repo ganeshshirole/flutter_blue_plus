@@ -257,10 +257,10 @@ class FlutterBluePlus {
       if (_isScanning.latestValue == true) {
         // stop existing scan
         await _stopScan();
-      } else {
-        // push to stream
-        _isScanning.add(true);
       }
+
+      // push to stream
+      _isScanning.add(true);
 
       var settings = BmScanSettings(
           withServices: withServices,
