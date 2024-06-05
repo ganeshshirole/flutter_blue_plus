@@ -1992,6 +1992,20 @@ public class FlutterBluePlusPlugin implements
         return count;
     }
 
+    @Override
+    public void onDeviceChanged(@NonNull BLEDevice device) {
+        Log.d(TAG, "Device Change: " + device.getId());
+        invokeMethod(device.getDevice(), device.getResult());
+    }
+
+    void invokeMethod(BluetoothDevice device, ScanResult result) {
+        // see BmScanResponse
+        HashMap<String, Object> response = new HashMap<>();
+        response.put("advertisements", Arrays.asList(bmScanAdvertisement(device, result)));
+
+        invokeMethodUIThread("OnScanResponse", response);
+    }
+
     private ScanCallback getScanCallback()
     {
         if(scanCallback == null) {
@@ -2047,11 +2061,7 @@ public class FlutterBluePlusPlugin implements
 
                         nearestDeviceResolver.addSample(sample);
                     } else {
-                        // see BmScanResponse
-                        HashMap<String, Object> response = new HashMap<>();
-                        response.put("advertisements", Arrays.asList(bmScanAdvertisement(device, result)));
-
-                        invokeMethodUIThread("OnScanResponse", response);
+                        invokeMethod(device, result);
                     }
                 }
 
